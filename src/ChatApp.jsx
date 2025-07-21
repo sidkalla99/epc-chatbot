@@ -1,10 +1,19 @@
+import * as XLSX from 'xlsx';
 import React, { useState, useRef,useEffect } from 'react';
 import './App.css';
 
 function ChatApp() {
 const sessionIdRef = useRef(crypto.randomUUID());
+const [copiedIndex, setCopiedIndex] = useState(null);
 
 // ➕ NEW: keep the socket instance
+const copyToClipboard = (text) => {
+  navigator.clipboard.writeText(text).then(() => {
+    console.log("✅ Copied to clipboard");
+  }).catch((err) => {
+    console.error("❌ Failed to copy: ", err);
+  });
+};
 const wsRef = useRef(null);
 const [messages, setMessages] = useState([
 { sender: 'Assistant', text: 'Hello! How can I assist you with your projects?' }
@@ -18,7 +27,7 @@ let ws;
 let reconnectTimer;
 
 const connectWebSocket = () => {
-    ws = new WebSocket('wss://vcvpeauj4c.execute-api.eu-central-1.amazonaws.com/production');
+    ws = new WebSocket('wss://wvro807cha.execute-api.eu-central-1.amazonaws.com/production');
     wsRef.current = ws;
 
 ws.onopen = () => {
@@ -152,7 +161,8 @@ const last = updated[updated.length - 1];
 if (last.sender === 'Assistant') {
 updated[updated.length - 1] = {
 ...last,
-text: typingRef.current
+text: typingRef.current,
+finished: true
 };
 }
 return updated;
@@ -173,7 +183,9 @@ const last = updated[updated.length - 1];
 if (last.sender === 'Assistant') {
 updated[updated.length - 1] = {
 ...last,
-text: typingRef.current
+text: typingRef.current,
+// finished: i === text.length - 1
+finished: false
 };
 }
 return updated;
@@ -181,9 +193,20 @@ return updated;
 i++;
 } else {
 clearInterval(interval);
-if (onComplete) onComplete();
-}
-}, 20);
+setMessages(prev => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last.sender === 'Assistant') {
+          updated[updated.length - 1] = {
+            ...last,
+            finished: true
+          };
+        }
+        return updated;
+      });
+      if (onComplete) onComplete();
+    }
+  }, 20);
 };
 
 const sendMessage = () => {
@@ -250,106 +273,73 @@ const handleKeyDown = (e) => {
 if (e.key === 'Enter') sendMessage();
 };
 
-//  🔽 Table CSV download handler
-// function downloadTableAsCSV(index) {
-//   const tempDiv = document.createElement('div');
-//   tempDiv.innerHTML = messages[index].text;
-
-//   const table = tempDiv.querySelector('table');
-//   if (!table) return;
-
-//   const csv = [];
-//   const rows = table.querySelectorAll('tr');
-
-//   for (const row of rows) {
-//     const cells = [...row.querySelectorAll('th, td')].map(cell =>
-//       `"${cell.textContent.replace(/"/g, '""')}"`
-//     );
-//     csv.push(cells.join(','));
-//   }
-
-//   const blob = new Blob([csv.join('\n')], { type: 'text/csv' });
-//   const link = document.createElement('a');
-//   link.href = URL.createObjectURL(blob);
-//   link.download = `zelo-table-${index + 1}.csv`;
-//   document.body.appendChild(link);
-//   link.click();
-//   document.body.removeChild(link);
-// }
+function getSheetTitleFromTable(_, index) {
+  return `Table ${index + 1}`;
+}
 
 function downloadTableAsCSV(index) {
-const tempDiv = document.createElement('div');
-tempDiv.innerHTML = messages[index].text;
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = messages[index].text;
 
-const table = tempDiv.querySelector('table');
-if (!table) return;
+  const tables = tempDiv.querySelectorAll('table');
+  if (!tables || tables.length === 0) return;
 
-const csv = [];
-const grid = [];
+  const wb = XLSX.utils.book_new();
 
-const rowspanTracker = []; // to hold values that need to be repeated vertically
+  tables.forEach((table, tableIndex) => {
+    const grid = [];
+    const rowspanTracker = [];
+    let rows = table.querySelectorAll('tr');
 
-const rows = table.querySelectorAll('tr');
-for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-const row = rows[rowIndex];
-const cells = [...row.querySelectorAll('th, td')];
-grid[rowIndex] = [];
+    // ⛔ Avoid duplicate headers (skip first row if identical to second)
+    if (
+      rows.length > 1 &&
+      rows[0].textContent.trim() === rows[1].textContent.trim()
+    ) {
+      rows = Array.from(rows).slice(1); // skip duplicate heading
+    }
 
-let colIndex = 0;
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex];
+      const cells = [...row.querySelectorAll('th, td')];
+      grid[rowIndex] = [];
 
-while (colIndex < 50) { // prevent infinite loop
-// Fill from rowspan tracker if any
-if (rowspanTracker[colIndex]?.count > 0) {
-if (!grid[rowIndex][colIndex]) {
-grid[rowIndex][colIndex] = rowspanTracker[colIndex].value;
-}
+      let colIndex = 0;
+      while (colIndex < 50) {
+        if (rowspanTracker[colIndex]?.count > 0) {
+          if (!grid[rowIndex][colIndex]) {
+            grid[rowIndex][colIndex] = rowspanTracker[colIndex].value;
+          }
+          rowspanTracker[colIndex].count -= 1;
+          colIndex++;
+        } else {
+          const cell = cells.shift();
+          if (!cell) break;
 
-rowspanTracker[colIndex].count -= 1;
-colIndex++;
-} else {
-const cell = cells.shift();
-if (!cell) break;
+          let value = cell.querySelector('a')?.href || cell.textContent.trim();
+          value = value.replace(/"/g, '""');
 
-let value;
-const link = cell.querySelector('a');
-if (link) {
-value = link.href; // Use the actual link
-} else {
-value = cell.textContent.trim();
-}
-value = value.replace(/"/g, '""');
+          const rowspan = parseInt(cell.getAttribute('rowspan') || '1', 10);
+          const colspan = parseInt(cell.getAttribute('colspan') || '1', 10);
 
-const rowspan = parseInt(cell.getAttribute('rowspan') || '1', 10);
-const colspan = parseInt(cell.getAttribute('colspan') || '1', 10);
+          for (let c = 0; c < colspan; c++) {
+            grid[rowIndex][colIndex + c] = value;
+            if (rowspan > 1) {
+              rowspanTracker[colIndex + c] = { value, count: rowspan - 1 };
+            }
+          }
 
-for (let c = 0; c < colspan; c++) {
-grid[rowIndex][colIndex + c] = value;
-if (rowspan > 1) {
-rowspanTracker[colIndex + c] = {
-value: value,
-count: rowspan - 1,
-};
-}
-}
+          colIndex += colspan;
+        }
+      }
+    }
 
-colIndex += colspan;
-}
-}
-}
+    const ws = XLSX.utils.aoa_to_sheet(grid);
+    const sheetName = getSheetTitleFromTable(table, tableIndex);
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  });
 
-// Convert grid to CSV
-for (let row of grid) {
-const line = (row || []).map(cell => `"${cell || ''}"`).join(',');
-csv.push(line);
-}
-
-const blob = new Blob([csv.join('\n')], { type: 'text/csv' });
-const link = document.createElement('a');
-link.href = URL.createObjectURL(blob);
-link.download = `zelo-table-${index + 1}.csv`;
-document.body.appendChild(link);
-link.click();
-document.body.removeChild(link);
+  XLSX.writeFile(wb, `zelo-tables-${index + 1}.xlsx`);
 }
 
 
@@ -370,27 +360,60 @@ onChange={() => setDarkMode(!darkMode)}
 </div>
 
 <div className="chat-box">
-{messages.map((msg, idx) => (
-// <div key={idx} className={`message ${msg.sender.toLowerCase()}`}>
-//   {msg.text}
-// </div>
-/// <div key={idx} className={`message ${msg.sender.toLowerCase()}`}>
-///   <div dangerouslySetInnerHTML={{ __html: msg.text }} />
-/// </div>
-<div key={idx} className={`message ${msg.sender.toLowerCase()}`}>
-{msg.sender === 'Assistant' && msg.text.includes('<table') ? (
-<div className="table-container">
-<div dangerouslySetInnerHTML={{ __html: msg.text }} />
-<button onClick={() => downloadTableAsCSV(idx)} className="download-button">
-Download CSV
-</button>
-</div>
-) : (
-<div dangerouslySetInnerHTML={{ __html: msg.text }} />
-)}
-</div>
+{messages.map((msg, idx) => {
+  const isHello = msg.text.toLowerCase().includes("hello");
+  const isAssistant = msg.sender === 'Assistant';
 
-))}
+  const handleCopy = (text, index) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 3000);
+  };
+
+  return (
+    <div key={idx} className={`message ${msg.sender.toLowerCase()}`}>
+      {isAssistant && msg.text.includes('<table') ? (
+        <div className="table-container">
+          <div dangerouslySetInnerHTML={{ __html: msg.text }} />
+          <div className="button-row">
+            <button
+              onClick={() => downloadTableAsCSV(idx)}
+              className="download-button"
+            >
+              Download Report
+            </button>
+            {!isHello && (
+              <button
+                onClick={() =>
+                  handleCopy(msg.text.replace(/<[^>]*>?/gm, ''), idx)
+                }
+                className="copy-button"
+                disabled={copiedIndex === idx}
+              >
+                {copiedIndex === idx ? "Copied!" : "Copy"}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div dangerouslySetInnerHTML={{ __html: msg.text }} />
+          {isAssistant && !isHello && msg.finished && (
+            <button
+              onClick={() =>
+                handleCopy(msg.text.replace(/<[^>]*>?/gm, ''), idx)
+              }
+              className="copy-button"
+              disabled={copiedIndex === idx}
+            >
+              {copiedIndex === idx ? "Copied!" : "Copy"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+})}
 
 {loading && (
 <div className="message assistant">
