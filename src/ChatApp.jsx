@@ -1,10 +1,13 @@
 import * as XLSX from 'xlsx';
 import React, { useState, useRef,useEffect } from 'react';
+import { Copy,Check, ThumbsUp, ThumbsDown, Share, RefreshCw, MoreHorizontal, Download } from "lucide-react";
 import './App.css';
 
-function ChatApp() {
+function ChatApp({ user }) {
 const sessionIdRef = useRef(crypto.randomUUID());
 const [copiedIndex, setCopiedIndex] = useState(null);
+const [feedback, setFeedback] = useState({});
+
 
 // ➕ NEW: keep the socket instance
 const copyToClipboard = (text) => {
@@ -21,13 +24,36 @@ const [messages, setMessages] = useState([
 const [userInput, setUserInput] = useState('');
 const [darkMode, setDarkMode] = useState(true);
 const [loading, setLoading] = useState(false);
+// const [historyTabActive, setHistoryTabActive] = useState(false);
+// const [chatHistory, setChatHistory] = useState([]);
+const handleFeedback = (index, type) => {
+  setFeedback(prev => ({ ...prev, [index]: type }));
+  console.log(`📊 Feedback for message ${index}:`, type);
+
+  // ✅ Send feedback only when clicked
+  if (wsRef.current?.readyState === 1) {
+    const payload = {
+      chatKey: messages[index].chatKey,
+      feedback: type,                              // "up" or "down"
+      responseText: messages[index].text,          // the assistant’s response being rated
+      sessionId: sessionIdRef.current,
+      userEmail: user?.attributes?.email,
+      username: user?.attributes?.email.split("@")[0],
+      timestamp: new Date().toISOString()
+    };
+
+    console.log("📤 Sending Feedback Payload:", payload);
+
+    wsRef.current.send(JSON.stringify(payload));
+  }
+};
 
 useEffect(() => {
 let ws;
 let reconnectTimer;
 
 const connectWebSocket = () => {
-    ws = new WebSocket('wss://vcvpeauj4c.execute-api.eu-central-1.amazonaws.com/production');
+    ws = new WebSocket('wss://wvro807cha.execute-api.eu-central-1.amazonaws.com/production');
     wsRef.current = ws;
 
 ws.onopen = () => {
@@ -53,29 +79,52 @@ console.log('✅ WebSocket connected');
 // };
 
 ws.onmessage = (evt) => {
-  let payload;
   try {
-    payload = JSON.parse(evt.data);
+    const { answer, error, chatKey } = JSON.parse(evt.data); // 👈 also destructure chatKey
+
+    if (error) {
+      setMessages(prev => [
+        ...prev,
+        { sender: 'Assistant', text: ` ${error}`, finished: true }
+      ]);
+      setLoading(false);
+      return;
+    }
+
+    if (!answer) {
+      console.warn("No answer field:", evt.data);
+      return;
+    }
+
+    //✅ Store chatKey with this Assistant message
+    setMessages(prev => [
+      ...prev,
+      { sender: 'Assistant', text: '', chatKey }  // 👈 include chatKey here
+    ]);
+
+    typeText(answer, () => setLoading(false));
+    console.log("📤 Sending Question Payload:", {
+      question: userInput,
+      sessionId: sessionIdRef.current,
+      userEmail: user?.attributes?.email,
+      username: user?.attributes?.email.split("@")[0],
+      timestamp: new Date().toISOString()
+    });
+
+    // (Optional) log the assistant response back
+    wsRef.current.send(
+      JSON.stringify({
+        agentResponse: answer,
+        sessionId: sessionIdRef.current,
+        userEmail: user?.attributes?.email,
+        username: user?.attributes?.email.split("@")[0]
+      })
+    );
   } catch (e) {
     console.warn("Non-JSON frame:", evt.data);
-    return;
   }
-
-  if (payload.error) {
-    // Display the error message as a response from Assistant
-    setMessages(prev => [...prev, { sender: 'Assistant', text: ` ${payload.error}`, finished: true }]);
-    setLoading(false);
-    return;
-  }
-
-  if (!payload.answer) {
-    console.warn("No answer field:", payload);
-    return;
-  }
-
-  setMessages(prev => [...prev, { sender: 'Assistant', text: '' }]);
-  typeText(payload.answer, () => setLoading(false));
 };
+
 
 ws.onclose = () => {
 console.warn("🔌 WebSocket closed, retrying in 3 seconds...");
@@ -246,14 +295,16 @@ setMessages(prev => [...prev, { sender: 'user', text: userInput }]);
 setUserInput('');
 setLoading(true);
 
+
 wsRef.current.send(
 JSON.stringify({
 question:  userInput,
-sessionId: sessionIdRef.current
+sessionId: sessionIdRef.current,
+userEmail: user?.attributes?.email,              // ✅ send real email
+username: user?.attributes?.email.split("@")[0]  // ✅ optional
 })
 );
 };
-
 
 // const sendMessage = async () => {
 //   if (!userInput.trim()) return;
@@ -293,6 +344,12 @@ sessionId: sessionIdRef.current
 //     setLoading(false);
 //   }
 // };
+
+const fetchHistory = async () => {
+  const res = await fetch(`https://fgi3msvj1m.execute-api.eu-central-1.amazonaws.com/dev/get-history?user_email=${user?.attributes?.email}`);
+  const data = await res.json();
+  setChatHistory(data);
+};
 
 const handleKeyDown = (e) => {
 if (e.key === 'Enter') sendMessage();
@@ -374,6 +431,23 @@ return (
 <div className="chat-container">
 <div className="header">
 <h1>Zelo</h1>
+{/* <button
+  onClick={() => {
+    setHistoryTabActive(!historyTabActive);
+    if (!historyTabActive) fetchHistory(); // Fetch only on open
+  }}    
+  style={{
+      marginLeft: '1rem',
+      backgroundColor: 'transparent',
+      border: '1px solid #ccc',
+      padding: '6px 10px',
+      borderRadius: '6px',
+      cursor: 'pointer',
+      color: darkMode ? 'white' : 'black'
+    }}
+>
+  {historyTabActive ? "Back to Chat" : "View History"}
+</button> */}
 <label className="switch">
 <input
 type="checkbox"
@@ -385,6 +459,18 @@ onChange={() => setDarkMode(!darkMode)}
 </div>
 
 <div className="chat-box">
+{/* // {!historyTabActive && (
+//   <div className="input-box">
+//     <input
+//       type="text"
+//       value={userInput}
+//       onChange={(e) => setUserInput(e.target.value)}
+//       onKeyDown={handleKeyDown}
+//       placeholder="Type your query here..."
+//     />
+//     <button onClick={sendMessage}>Send</button>
+//   </div>
+// )} */}
 {messages.map((msg, idx) => {
   const isHello = msg.text.toLowerCase().includes("hello");
   const isAssistant = msg.sender === 'Assistant';
@@ -401,22 +487,43 @@ onChange={() => setDarkMode(!darkMode)}
         <div className="table-container">
           <div dangerouslySetInnerHTML={{ __html: msg.text }} />
           <div className="button-row">
-            <button
-              onClick={() => downloadTableAsCSV(idx)}
-              className="download-button"
-            >
-              Download Report
-            </button>
             {!isHello && (
-              <button
-                onClick={() =>
-                  handleCopy(msg.text.replace(/<[^>]*>?/gm, ''), idx)
-                }
-                className="copy-button"
-                disabled={copiedIndex === idx}
-              >
+              <div className="action-bar">
+              <div className="tooltip">  
+              <Download
+              className="action-icon"
+              onClick={() => downloadTableAsCSV(idx)}
+            />
+              <span className="tooltip-text">Download</span>
+            </div>                
+            <div className="tooltip">
+              {copiedIndex === idx ? (
+                <Check className="action-icon active" />
+              ) : (
+                <Copy
+                  className="action-icon"
+                  onClick={() => handleCopy(msg.text.replace(/<[^>]*>?/gm, ''), idx)}
+                />
+              )}
+              <span className="tooltip-text">
                 {copiedIndex === idx ? "Copied!" : "Copy"}
-              </button>
+              </span>
+            </div>
+            <div className="tooltip">  
+              <ThumbsUp
+                className={`action-icon ${feedback[idx] === "up" ? "active" : ""}`}
+                onClick={() => handleFeedback(idx, "up")}
+              />
+              <span className="tooltip-text">Good response</span>
+            </div>
+            <div className="tooltip">    
+              <ThumbsDown
+                className={`action-icon ${feedback[idx] === "down" ? "active" : ""}`}
+                onClick={() => handleFeedback(idx, "down")}
+              />
+              <span className="tooltip-text">Bad response</span>
+            </div>                
+            </div>
             )}
           </div>
         </div>
@@ -424,15 +531,38 @@ onChange={() => setDarkMode(!darkMode)}
         <div>
           <div dangerouslySetInnerHTML={{ __html: msg.text }} />
           {isAssistant && !isHello && msg.finished && (
-            <button
-              onClick={() =>
-                handleCopy(msg.text.replace(/<[^>]*>?/gm, ''), idx)
-              }
-              className="copy-button"
-              disabled={copiedIndex === idx}
-            >
-              {copiedIndex === idx ? "Copied!" : "Copy"}
-            </button>
+            <div className="button-row">
+              <div className="action-bar">
+              <div className="tooltip">
+                {copiedIndex === idx ? (
+                  <Check className="action-icon active" />
+                ) : (
+                  <Copy
+                    className="action-icon"
+                    onClick={() => handleCopy(msg.text.replace(/<[^>]*>?/gm, ''), idx)}
+                  />
+                )}
+                <span className="tooltip-text">
+                  {copiedIndex === idx ? "Copied!" : "Copy"}
+                </span>
+              </div>
+              <div className="tooltip">   
+                <ThumbsUp
+                  className={`action-icon ${feedback[idx] === "up" ? "active" : ""}`}
+                  onClick={() => handleFeedback(idx, "up")}
+                />
+                <span className="tooltip-text">Good response</span>
+              </div>
+              <div className="tooltip"> 
+                <ThumbsDown
+                  className={`action-icon ${feedback[idx] === "down" ? "active" : ""}`}
+                  onClick={() => handleFeedback(idx, "down")}
+                />
+                <span className="tooltip-text">Bad response</span>
+              </div>                 
+              </div>
+
+            </div>
           )}
         </div>
       )}
